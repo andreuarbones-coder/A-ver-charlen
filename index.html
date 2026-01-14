@@ -1,0 +1,545 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>VoiceStream Pro</title>
+    
+    <!-- Tailwind CSS -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    
+    <!-- Lucide Icons -->
+    <script src="https://unpkg.com/lucide@latest"></script>
+
+    <!-- Firebase SDKs (Modular) -->
+    <script type="module">
+        import { initializeApp } from "https://www.gstatic.com/firebasejs/10.7.1/firebase-app.js";
+        import { getDatabase, ref, push, set, onChildAdded, remove, serverTimestamp, query, limitToLast, onValue } from "https://www.gstatic.com/firebasejs/10.7.1/firebase-database.js";
+        import { getStorage, ref as sRef, uploadBytes, getDownloadURL } from "https://www.gstatic.com/firebasejs/10.7.1/firebase-storage.js";
+        
+        // Exponer clases al window para uso global
+        window.FirebaseMods = { initializeApp, getDatabase, ref, push, set, onChildAdded, remove, serverTimestamp, query, limitToLast, onValue, getStorage, sRef, uploadBytes, getDownloadURL };
+    </script>
+
+    <style>
+        /* Custom Scrollbar */
+        ::-webkit-scrollbar { width: 6px; }
+        ::-webkit-scrollbar-track { background: #1f2937; }
+        ::-webkit-scrollbar-thumb { background: #4b5563; border-radius: 3px; }
+        ::-webkit-scrollbar-thumb:hover { background: #6b7280; }
+
+        /* Animations */
+        @keyframes pulse-ring {
+            0% { transform: scale(0.8); box-shadow: 0 0 0 0 rgba(239, 68, 68, 0.7); }
+            70% { transform: scale(1.1); box-shadow: 0 0 0 15px rgba(239, 68, 68, 0); }
+            100% { transform: scale(0.8); box-shadow: 0 0 0 0 rgba(239, 68, 68, 0); }
+        }
+        .recording-pulse {
+            animation: pulse-ring 1.5s cubic-bezier(0.215, 0.61, 0.355, 1) infinite;
+        }
+
+        .glass-panel {
+            background: rgba(31, 41, 55, 0.7);
+            backdrop-filter: blur(10px);
+            border: 1px solid rgba(255, 255, 255, 0.1);
+        }
+
+        /* Prevent select on mobile for long press */
+        .no-select {
+            user-select: none;
+            -webkit-user-select: none;
+            -webkit-touch-callout: none;
+        }
+    </style>
+</head>
+<body class="bg-gray-900 text-white h-screen overflow-hidden flex flex-col font-sans">
+
+    <!-- SETUP MODAL (Solo se muestra si no hay config hardcodeada) -->
+    <div id="setupModal" class="fixed inset-0 z-50 bg-black/90 flex items-center justify-center p-4 hidden">
+        <div class="bg-gray-800 p-6 rounded-2xl max-w-md w-full border border-gray-700 shadow-2xl">
+            <h2 class="text-2xl font-bold mb-4 text-emerald-400">Configuración Inicial</h2>
+            <p class="text-gray-400 text-sm mb-4">Ingresa tu nombre para comenzar.</p>
+            
+            <label class="block text-xs font-bold text-gray-500 uppercase mb-1">Tu Nombre</label>
+            <input type="text" id="setupName" placeholder="Ej: CyberPunk" class="w-full bg-gray-900 border border-gray-700 rounded p-2 mb-4 text-white focus:outline-none focus:border-emerald-500">
+
+            <!-- Sección de config manual (oculta si ya existe config en código) -->
+            <div id="manualConfigSection">
+                <label class="block text-xs font-bold text-gray-500 uppercase mb-1">Firebase Config (JSON)</label>
+                <textarea id="setupFirebase" rows="5" placeholder='{"apiKey": "...", ...}' class="w-full bg-gray-900 border border-gray-700 rounded p-2 mb-4 text-xs font-mono text-green-400 focus:outline-none focus:border-emerald-500"></textarea>
+
+                <label class="block text-xs font-bold text-gray-500 uppercase mb-1">OpenAI API Key (Opcional)</label>
+                <input type="password" id="setupOpenAI" placeholder="sk-..." class="w-full bg-gray-900 border border-gray-700 rounded p-2 mb-6 text-white focus:outline-none focus:border-emerald-500">
+            </div>
+
+            <button id="saveSetupBtn" class="w-full bg-emerald-600 hover:bg-emerald-500 text-white font-bold py-3 rounded-xl transition-all">
+                Entrar al Sistema
+            </button>
+        </div>
+    </div>
+
+    <!-- HEADER -->
+    <header class="glass-panel p-4 flex justify-between items-center z-10 shadow-lg">
+        <div class="flex items-center gap-3">
+            <div class="w-10 h-10 rounded-full bg-gradient-to-tr from-emerald-500 to-cyan-500 flex items-center justify-center font-bold text-lg shadow-lg" id="userAvatar">
+                ?
+            </div>
+            <div>
+                <h1 class="font-bold text-lg tracking-wide">VoiceStream</h1>
+                <div class="flex items-center gap-1.5">
+                    <span class="w-2 h-2 rounded-full bg-emerald-500 animate-pulse"></span>
+                    <span class="text-xs text-gray-400" id="statusText">Conectando...</span>
+                </div>
+            </div>
+        </div>
+        <button id="settingsBtn" class="p-2 text-gray-400 hover:text-white transition-colors">
+            <i data-lucide="settings"></i>
+        </button>
+    </header>
+
+    <!-- CHAT AREA -->
+    <main id="chatArea" class="flex-1 overflow-y-auto p-4 space-y-4 scroll-smooth pb-32">
+        <div class="text-center text-gray-500 text-sm my-8">
+            <p>Bienvenido al canal seguro.</p>
+            <p>Mantén presionado el micrófono para transmitir en vivo.</p>
+        </div>
+    </main>
+
+    <!-- INPUT AREA -->
+    <footer class="fixed bottom-0 w-full glass-panel p-4 pb-6 z-20">
+        <!-- Audio Status Indicator -->
+        <div id="liveIndicator" class="hidden absolute -top-10 left-1/2 transform -translate-x-1/2 bg-red-500/90 text-white px-4 py-1 rounded-full text-xs font-bold flex items-center gap-2 shadow-lg backdrop-blur">
+            <span class="animate-ping absolute inline-flex h-2 w-2 rounded-full bg-white opacity-75"></span>
+            <span class="relative inline-flex rounded-full h-2 w-2 bg-white"></span>
+            TRANSMITIENDO EN VIVO...
+        </div>
+
+        <div class="flex items-end gap-3 max-w-4xl mx-auto">
+            <label class="p-3 text-gray-400 hover:text-cyan-400 cursor-pointer transition-colors bg-gray-800 rounded-full">
+                <input type="file" id="imageInput" accept="image/*" class="hidden">
+                <i data-lucide="image"></i>
+            </label>
+
+            <div class="flex-1 bg-gray-800 rounded-2xl flex items-center border border-gray-700 focus-within:border-cyan-500 transition-colors">
+                <input type="text" id="messageInput" placeholder="Escribe un mensaje..." class="w-full bg-transparent p-3 text-white focus:outline-none rounded-2xl" autocomplete="off">
+                <button id="sendBtn" class="p-3 text-cyan-500 hover:text-cyan-300 hidden">
+                    <i data-lucide="send"></i>
+                </button>
+            </div>
+
+            <button id="micBtn" class="no-select w-12 h-12 rounded-full bg-gradient-to-r from-emerald-600 to-teal-600 flex items-center justify-center text-white shadow-lg active:scale-95 transition-transform touch-none">
+                <i data-lucide="mic"></i>
+            </button>
+        </div>
+    </footer>
+
+    <!-- LOGIC -->
+    <script type="module">
+        // --------------------------------------------------------------------------
+        // 🔴 CONFIGURACIÓN DE FIREBASE (Ya integrada)
+        // --------------------------------------------------------------------------
+        const FIREBASE_CONFIG = {
+            apiKey: "AIzaSyASWpIx5lvoYHHcyQzv3A2sJfU-TtNwIO8",
+            authDomain: "a-ver-charlen.firebaseapp.com",
+            // Agregado manualmente porque faltaba en tu snippet, es la URL standard
+            databaseURL: "https://a-ver-charlen-default-rtdb.firebaseio.com", 
+            projectId: "a-ver-charlen",
+            storageBucket: "a-ver-charlen.firebasestorage.app",
+            messagingSenderId: "414933228498",
+            appId: "1:414933228498:web:fae4c31dfa855addd7c60b"
+        };
+        
+        // Opcional: Tu API Key de OpenAI para transcripciones (Si no la usas, déjala null)
+        const OPENAI_KEY = null; 
+        
+        // --------------------------------------------------------------------------
+        // 1. STATE
+        // --------------------------------------------------------------------------
+        const state = {
+            user: { id: null, name: 'Anon' },
+            config: { firebase: FIREBASE_CONFIG, openai: OPENAI_KEY },
+            isRecording: false,
+            audioContext: null,
+            nextPlayTime: 0,
+            mediaRecorder: null,
+            audioChunks: [],
+            streamId: null
+        };
+
+        const els = {
+            setupModal: document.getElementById('setupModal'),
+            setupName: document.getElementById('setupName'),
+            manualConfigSection: document.getElementById('manualConfigSection'),
+            setupFirebase: document.getElementById('setupFirebase'),
+            setupOpenAI: document.getElementById('setupOpenAI'),
+            saveSetupBtn: document.getElementById('saveSetupBtn'),
+            chatArea: document.getElementById('chatArea'),
+            messageInput: document.getElementById('messageInput'),
+            sendBtn: document.getElementById('sendBtn'),
+            micBtn: document.getElementById('micBtn'),
+            liveIndicator: document.getElementById('liveIndicator'),
+            imageInput: document.getElementById('imageInput'),
+            settingsBtn: document.getElementById('settingsBtn'),
+            userAvatar: document.getElementById('userAvatar'),
+            statusText: document.getElementById('statusText')
+        };
+
+        let db, storage;
+
+        // --------------------------------------------------------------------------
+        // 2. AUDIO ENGINE
+        // --------------------------------------------------------------------------
+        class AudioEngine {
+            constructor() {
+                this.AudioContext = window.AudioContext || window.webkitAudioContext;
+                this.ctx = new this.AudioContext();
+            }
+
+            async startRecording(onChunk, onStop) {
+                try {
+                    const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+                    state.streamId = `stream_${Date.now()}_${state.user.id}`;
+                    
+                    const options = MediaRecorder.isTypeSupported('audio/webm;codecs=opus') 
+                        ? { mimeType: 'audio/webm;codecs=opus' } 
+                        : {};
+                    
+                    state.mediaRecorder = new MediaRecorder(stream, options);
+                    state.audioChunks = [];
+
+                    state.mediaRecorder.ondataavailable = async (e) => {
+                        if (e.data.size > 0) {
+                            state.audioChunks.push(e.data);
+                            const reader = new FileReader();
+                            reader.readAsDataURL(e.data);
+                            reader.onloadend = () => {
+                                const base64data = reader.result.split(',')[1];
+                                onChunk(state.streamId, base64data);
+                            };
+                        }
+                    };
+
+                    state.mediaRecorder.onstop = () => {
+                        const blob = new Blob(state.audioChunks, { type: 'audio/webm' });
+                        onStop(blob, state.streamId);
+                        stream.getTracks().forEach(track => track.stop());
+                    };
+
+                    state.mediaRecorder.start(500); 
+                    state.isRecording = true;
+                    updateMicUI(true);
+
+                } catch (err) {
+                    console.error("Error micrófono:", err);
+                    alert("No se pudo acceder al micrófono.");
+                }
+            }
+
+            stopRecording() {
+                if (state.mediaRecorder && state.isRecording) {
+                    state.mediaRecorder.stop();
+                    state.isRecording = false;
+                    updateMicUI(false);
+                }
+            }
+
+            async playStreamChunk(base64data) {
+                if (this.ctx.state === 'suspended') await this.ctx.resume();
+                try {
+                    const binaryString = window.atob(base64data);
+                    const len = binaryString.length;
+                    const bytes = new Uint8Array(len);
+                    for (let i = 0; i < len; i++) { bytes[i] = binaryString.charCodeAt(i); }
+                    
+                    const audioBuffer = await this.ctx.decodeAudioData(bytes.buffer);
+                    const source = this.ctx.createBufferSource();
+                    source.buffer = audioBuffer;
+                    source.connect(this.ctx.destination);
+
+                    const now = this.ctx.currentTime;
+                    const startAt = Math.max(now, state.nextPlayTime);
+                    source.start(startAt);
+                    state.nextPlayTime = startAt + audioBuffer.duration;
+                } catch (e) {
+                    console.error("Error audio chunk", e);
+                }
+            }
+        }
+        const audioEngine = new AudioEngine();
+
+        // --------------------------------------------------------------------------
+        // 3. FIREBASE LOGIC
+        // --------------------------------------------------------------------------
+        async function initFirebase() {
+            if (!state.config.firebase) {
+                showSetup(true);
+                return;
+            }
+            const { initializeApp, getDatabase, getStorage } = window.FirebaseMods;
+            try {
+                // Check if app already initialized
+                let app;
+                try {
+                   app = initializeApp(state.config.firebase);
+                } catch(e) {
+                    // Assume initialized if error is duplicate app or re-run
+                }
+                
+                db = getDatabase(app);
+                storage = getStorage(app);
+                
+                els.statusText.innerText = "En línea";
+                els.statusText.classList.remove('text-red-400');
+                startListeners();
+            } catch (e) {
+                console.error("Firebase init failed", e);
+                els.statusText.innerText = "Error Conexión";
+                els.statusText.classList.add('text-red-400');
+                showSetup(true);
+            }
+        }
+
+        function startListeners() {
+            const { ref, onChildAdded, query, limitToLast } = window.FirebaseMods;
+
+            const chatRef = query(ref(db, 'messages'), limitToLast(50));
+            onChildAdded(chatRef, (snapshot) => {
+                renderMessage(snapshot.val(), snapshot.key);
+            });
+
+            const streamRef = ref(db, 'stream');
+            onChildAdded(streamRef, (snapshot) => {
+                const streamSession = snapshot.val();
+                if (streamSession.userId !== state.user.id) {
+                    const chunksRef = ref(db, `stream/${snapshot.key}/chunks`);
+                    onChildAdded(chunksRef, (chunkSnap) => {
+                        audioEngine.playStreamChunk(chunkSnap.val());
+                        showTalkingNotification(streamSession.userName);
+                    });
+                }
+            });
+        }
+
+        // ... (Send logic remains same) ...
+        async function sendLiveChunk(streamId, base64) {
+            const { ref, push, set } = window.FirebaseMods;
+            const chunkRef = push(ref(db, `stream/${streamId}/chunks`));
+            await set(chunkRef, base64);
+            // Metadata for session if new
+            await set(ref(db, `stream/${streamId}/userId`), state.user.id);
+            await set(ref(db, `stream/${streamId}/userName`), state.user.name);
+        }
+
+        async function finalizeAudio(blob, streamId) {
+            const { ref, push, set, serverTimestamp, remove } = window.FirebaseMods;
+            const { ref: sRef, uploadBytes, getDownloadURL } = window.FirebaseMods;
+
+            const filename = `audios/${Date.now()}_${state.user.id}.webm`;
+            const storageRef = sRef(storage, filename);
+            
+            try {
+                await uploadBytes(storageRef, blob);
+                const audioUrl = await getDownloadURL(storageRef);
+
+                let transcript = "";
+                if (state.config.openai) {
+                    transcript = await transcribeAudio(blob);
+                }
+
+                const msgRef = push(ref(db, 'messages'));
+                await set(msgRef, {
+                    type: 'audio',
+                    userId: state.user.id,
+                    userName: state.user.name,
+                    content: audioUrl,
+                    transcript: transcript,
+                    timestamp: serverTimestamp()
+                });
+
+                setTimeout(() => remove(ref(db, `stream/${streamId}`)), 2000);
+            } catch (e) { console.error("Upload failed", e); }
+        }
+
+        async function transcribeAudio(blob) {
+            const formData = new FormData();
+            formData.append("file", blob, "audio.webm");
+            formData.append("model", "whisper-1");
+            try {
+                const response = await fetch("https://api.openai.com/v1/audio/transcriptions", {
+                    method: "POST",
+                    headers: { "Authorization": `Bearer ${state.config.openai}` },
+                    body: formData
+                });
+                const data = await response.json();
+                return data.text || "";
+            } catch (error) { return ""; }
+        }
+
+        // --------------------------------------------------------------------------
+        // 4. UI
+        // --------------------------------------------------------------------------
+        function showSetup(forceManual = false) {
+            els.setupModal.classList.remove('hidden');
+            // Check if we have name saved
+            const savedName = localStorage.getItem('vs_name');
+            if (savedName) els.setupName.value = savedName;
+
+            // If config is hardcoded, hide the manual config section
+            if (!forceManual && state.config.firebase) {
+                els.manualConfigSection.classList.add('hidden');
+            } else {
+                els.manualConfigSection.classList.remove('hidden');
+            }
+        }
+
+        function renderMessage(msg, key) {
+            const isMe = msg.userId === state.user.id;
+            const div = document.createElement('div');
+            div.className = `flex flex-col ${isMe ? 'items-end' : 'items-start'} mb-4 animate-in fade-in slide-in-from-bottom-2 duration-300`;
+            
+            let content = '';
+            if (msg.type === 'text') content = `<p class="text-sm">${escapeHtml(msg.content)}</p>`;
+            else if (msg.type === 'image') content = `<img src="${msg.content}" class="max-w-[200px] rounded-lg border border-gray-600">`;
+            else if (msg.type === 'audio') content = `
+                <div class="flex items-center gap-2 min-w-[200px]">
+                    <button onclick="this.nextElementSibling.play()" class="p-2 bg-gray-700 rounded-full hover:bg-gray-600"><i data-lucide="play" class="w-4 h-4"></i></button>
+                    <audio src="${msg.content}" class="hidden"></audio>
+                    <div class="flex-1">
+                        <div class="h-1 bg-gray-700 rounded w-full overflow-hidden"><div class="h-full bg-cyan-500 w-1/2"></div></div>
+                        ${msg.transcript ? `<p class="text-[10px] text-gray-400 mt-1 italic">"${msg.transcript}"</p>` : ''}
+                    </div>
+                </div>`;
+
+            div.innerHTML = `
+                <span class="text-[10px] text-gray-500 mb-1 px-1">${msg.userName}</span>
+                <div class="${isMe ? 'bg-emerald-700 text-white rounded-br-none' : 'bg-gray-700 text-gray-200 rounded-bl-none'} p-3 rounded-2xl shadow-md max-w-[85%] break-words">
+                    ${content}
+                </div>`;
+            els.chatArea.appendChild(div);
+            els.chatArea.scrollTop = els.chatArea.scrollHeight;
+            lucide.createIcons();
+        }
+
+        function updateMicUI(recording) {
+            if (recording) {
+                els.micBtn.classList.add('bg-red-600', 'recording-pulse');
+                els.micBtn.classList.remove('bg-gradient-to-r', 'from-emerald-600', 'to-teal-600');
+                els.liveIndicator.classList.remove('hidden');
+            } else {
+                els.micBtn.classList.remove('bg-red-600', 'recording-pulse');
+                els.micBtn.classList.add('bg-gradient-to-r', 'from-emerald-600', 'to-teal-600');
+                els.liveIndicator.classList.add('hidden');
+            }
+        }
+
+        function showTalkingNotification(name) {
+            els.statusText.innerText = `${name} está hablando...`;
+            els.statusText.classList.add('text-emerald-400');
+            clearTimeout(window.talkTimeout);
+            window.talkTimeout = setTimeout(() => {
+                els.statusText.innerText = "En línea";
+                els.statusText.classList.remove('text-emerald-400');
+            }, 2000);
+        }
+
+        // --------------------------------------------------------------------------
+        // 5. BOOTSTRAP
+        // --------------------------------------------------------------------------
+        
+        // Check for saved local config override (legacy or dev mode)
+        const localData = JSON.parse(localStorage.getItem('vs_config') || '{}');
+        
+        // Priority: Hardcoded > LocalStorage > Null
+        if (!state.config.firebase && localData.config?.firebase) {
+            state.config.firebase = localData.config.firebase;
+            state.config.openai = localData.config.openai;
+        }
+
+        // User ID Persistence
+        if (localData.user) {
+            state.user = localData.user;
+        } else {
+            state.user.id = crypto.randomUUID();
+        }
+
+        // Setup logic
+        els.saveSetupBtn.addEventListener('click', () => {
+            const name = els.setupName.value || 'Anon';
+            state.user.name = name;
+            localStorage.setItem('vs_name', name);
+
+            // If manual config was entered
+            if (!state.config.firebase) {
+                try {
+                    const fbConfig = JSON.parse(els.setupFirebase.value);
+                    const openAI = els.setupOpenAI.value;
+                    state.config.firebase = fbConfig;
+                    state.config.openai = openAI;
+                    
+                    // Save to local storage so they don't type it again on THIS device
+                    localStorage.setItem('vs_config', JSON.stringify({
+                        user: state.user,
+                        config: state.config
+                    }));
+                } catch(e) {
+                    alert("JSON Inválido");
+                    return;
+                }
+            } else {
+                // If using hardcoded, just update name in storage
+                localStorage.setItem('vs_config', JSON.stringify({
+                    user: state.user,
+                    config: null // Don't save hardcoded config to localstorage, keep it clean
+                }));
+            }
+
+            els.setupModal.classList.add('hidden');
+            els.userAvatar.innerText = name.substring(0,2).toUpperCase();
+            initFirebase();
+        });
+
+        els.settingsBtn.addEventListener('click', () => showSetup(false));
+
+        // Auto-start if we have everything
+        if (state.config.firebase && state.user.name !== 'Anon') {
+            els.userAvatar.innerText = state.user.name.substring(0,2).toUpperCase();
+            initFirebase();
+        } else {
+            showSetup(false);
+        }
+
+        // ... (Event Listeners for Chat/Mic remain same) ...
+        els.messageInput.addEventListener('input', (e) => els.sendBtn.classList.toggle('hidden', e.target.value.trim() === ''));
+        async function sendText() {
+            const txt = els.messageInput.value.trim();
+            if (!txt) return;
+            const { ref, push, set, serverTimestamp } = window.FirebaseMods;
+            await set(push(ref(db, 'messages')), { type: 'text', userId: state.user.id, userName: state.user.name, content: txt, timestamp: serverTimestamp() });
+            els.messageInput.value = '';
+            els.sendBtn.classList.add('hidden');
+        }
+        els.sendBtn.addEventListener('click', sendText);
+        els.messageInput.addEventListener('keydown', (e) => { if(e.key === 'Enter') sendText(); });
+
+        els.imageInput.addEventListener('change', async (e) => {
+            const file = e.target.files[0];
+            if (!file) return;
+            const { ref, push, set, serverTimestamp } = window.FirebaseMods;
+            const { ref: sRef, uploadBytes, getDownloadURL } = window.FirebaseMods;
+            const storageRef = sRef(storage, `images/${Date.now()}_${file.name}`);
+            await uploadBytes(storageRef, file);
+            const url = await getDownloadURL(storageRef);
+            await set(push(ref(db, 'messages')), { type: 'image', userId: state.user.id, userName: state.user.name, content: url, timestamp: serverTimestamp() });
+        });
+
+        const startAction = (e) => { e.preventDefault(); audioEngine.startRecording((sid, ch) => sendLiveChunk(sid, ch), (blob, sid) => finalizeAudio(blob, sid)); };
+        const stopAction = (e) => { e.preventDefault(); audioEngine.stopRecording(); };
+        els.micBtn.addEventListener('mousedown', startAction); els.micBtn.addEventListener('mouseup', stopAction); els.micBtn.addEventListener('mouseleave', stopAction);
+        els.micBtn.addEventListener('touchstart', startAction); els.micBtn.addEventListener('touchend', stopAction);
+
+        function escapeHtml(text) { return text.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;").replace(/'/g, "&#039;"); }
+        lucide.createIcons();
+
+    </script>
+</body>
+</html>
