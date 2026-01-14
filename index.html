@@ -59,7 +59,6 @@
             border: 1px solid rgba(255, 255, 255, 0.1);
         }
 
-        /* Prevent select on mobile for long press */
         .no-select {
             user-select: none;
             -webkit-user-select: none;
@@ -111,7 +110,6 @@
                 <input type="range" id="volumeSliderModal" min="0" max="1" step="0.1" value="1" class="w-full">
             </div>
 
-            <!-- Sección de config manual (oculta si ya existe config en código) -->
             <div id="manualConfigSection">
                 <label class="block text-xs font-bold text-gray-500 uppercase mb-1">Firebase Config (JSON)</label>
                 <textarea id="setupFirebase" rows="5" placeholder='{"apiKey": "...", ...}' class="w-full bg-gray-900 border border-gray-700 rounded p-2 mb-4 text-xs font-mono text-green-400 focus:outline-none focus:border-emerald-500"></textarea>
@@ -170,7 +168,7 @@
         <div id="liveIndicator" class="hidden absolute -top-10 left-1/2 transform -translate-x-1/2 bg-red-500/90 text-white px-4 py-1 rounded-full text-xs font-bold flex items-center gap-2 shadow-lg backdrop-blur pointer-events-none">
             <span class="animate-ping absolute inline-flex h-2 w-2 rounded-full bg-white opacity-75"></span>
             <span class="relative inline-flex rounded-full h-2 w-2 bg-white"></span>
-            TRANSMITIENDO EN VIVO...
+            TRANSMITIENDO...
         </div>
 
         <div class="flex items-end gap-3 max-w-4xl mx-auto">
@@ -195,9 +193,6 @@
 
     <!-- LOGIC -->
     <script type="module">
-        // --------------------------------------------------------------------------
-        // 🔴 CONFIGURACIÓN DE FIREBASE (Ya integrada)
-        // --------------------------------------------------------------------------
         const FIREBASE_CONFIG = {
             apiKey: "AIzaSyASWpIx5lvoYHHcyQzv3A2sJfU-TtNwIO8",
             authDomain: "a-ver-charlen.firebaseapp.com",
@@ -210,9 +205,6 @@
         
         const OPENAI_KEY = null; 
         
-        // --------------------------------------------------------------------------
-        // 1. STATE
-        // --------------------------------------------------------------------------
         const state = {
             user: { id: null, name: 'Anon' },
             config: { firebase: FIREBASE_CONFIG, openai: OPENAI_KEY },
@@ -221,8 +213,10 @@
             audioContext: null,
             nextPlayTime: 0,
             mediaRecorder: null,
-            audioChunks: [],
-            streamId: null
+            stream: null,
+            fullAudioChunks: [], // Almacena todo para el archivo final
+            streamId: null,
+            chunkInterval: null
         };
 
         const els = {
@@ -249,14 +243,12 @@
         let db, storage;
 
         // --------------------------------------------------------------------------
-        // 2. AUDIO ENGINE (Mejorado con Control de Volumen)
+        // AUDIO ENGINE FIXED (Chunking Replay)
         // --------------------------------------------------------------------------
         class AudioEngine {
             constructor() {
                 this.AudioContext = window.AudioContext || window.webkitAudioContext;
                 this.ctx = new this.AudioContext();
-                
-                // Master Volume Node
                 this.masterGain = this.ctx.createGain();
                 this.masterGain.gain.value = state.volume;
                 this.masterGain.connect(this.ctx.destination);
@@ -264,119 +256,152 @@
 
             setVolume(value) {
                 state.volume = value;
-                // Transition smooth para evitar "pops"
-                this.masterGain.gain.setTargetAtTime(value, this.ctx.currentTime, 0.1);
+                if(this.masterGain) this.masterGain.gain.setTargetAtTime(value, this.ctx.currentTime, 0.1);
             }
 
             resumeContext() {
-                if (this.ctx.state === 'suspended') {
-                    this.ctx.resume();
-                }
+                if (this.ctx.state === 'suspended') this.ctx.resume();
+            }
+
+            playBeep(freq = 440) {
+                this.resumeContext();
+                const osc = this.ctx.createOscillator();
+                const gain = this.ctx.createGain();
+                osc.connect(gain);
+                gain.connect(this.ctx.destination);
+                osc.frequency.value = freq;
+                gain.gain.setValueAtTime(0.1, this.ctx.currentTime);
+                gain.gain.exponentialRampToValueAtTime(0.001, this.ctx.currentTime + 0.2);
+                osc.start();
+                osc.stop(this.ctx.currentTime + 0.2);
             }
 
             async startRecording(onChunk, onStop) {
-                if (state.isRecording) return; // Prevent double start
-
+                if (state.isRecording) return;
+                
                 this.resumeContext();
+                this.playBeep(600); // Start Beep
+
                 try {
-                    const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+                    // Pedimos el stream una sola vez
+                    state.stream = await navigator.mediaDevices.getUserMedia({ audio: true });
                     state.streamId = `stream_${Date.now()}_${state.user.id}`;
+                    state.fullAudioChunks = [];
                     
-                    const options = MediaRecorder.isTypeSupported('audio/webm;codecs=opus') 
-                        ? { mimeType: 'audio/webm;codecs=opus' } 
-                        : {};
+                    const options = MediaRecorder.isTypeSupported('audio/webm;codecs=opus') ? { mimeType: 'audio/webm;codecs=opus' } : {};
                     
-                    state.mediaRecorder = new MediaRecorder(stream, options);
-                    state.audioChunks = [];
+                    // Función interna para crear una instancia de grabadora corta
+                    const startSlice = () => {
+                        if (!state.isRecording) return;
 
-                    state.mediaRecorder.ondataavailable = async (e) => {
-                        if (e.data.size > 0) {
-                            state.audioChunks.push(e.data);
-                            const reader = new FileReader();
-                            reader.readAsDataURL(e.data);
-                            reader.onloadend = () => {
-                                const base64data = reader.result.split(',')[1];
-                                onChunk(state.streamId, base64data);
-                            };
-                        }
+                        // Creamos una nueva instancia cada vez para forzar HEADER en cada chunk
+                        const recorder = new MediaRecorder(state.stream, options);
+                        
+                        recorder.ondataavailable = async (e) => {
+                            if (e.data.size > 0) {
+                                // Guardamos para el archivo final
+                                state.fullAudioChunks.push(e.data);
+                                
+                                // Enviamos chunk válido (con header propio)
+                                const reader = new FileReader();
+                                reader.readAsDataURL(e.data);
+                                reader.onloadend = () => {
+                                    const base64data = reader.result.split(',')[1];
+                                    onChunk(state.streamId, base64data);
+                                };
+                            }
+                        };
+
+                        recorder.start();
+                        
+                        // Detener esta slice en X ms
+                        setTimeout(() => {
+                            if (recorder.state === 'recording') recorder.stop();
+                        }, 800); // 800ms slices
                     };
 
-                    state.mediaRecorder.onstop = () => {
-                        const blob = new Blob(state.audioChunks, { type: 'audio/webm' });
-                        onStop(blob, state.streamId);
-                        stream.getTracks().forEach(track => track.stop());
-                    };
-
-                    // Slices pequeños para latencia baja
-                    state.mediaRecorder.start(500); 
                     state.isRecording = true;
                     updateMicUI(true);
 
+                    // Loop de grabación
+                    startSlice(); // Primero inmediato
+                    state.chunkInterval = setInterval(startSlice, 850); // Loop con pequeño solapamiento/gap
+
                 } catch (err) {
-                    console.error("Error micrófono:", err);
-                    alert("No se pudo acceder al micrófono. Verifica permisos y HTTPS.");
-                    state.isRecording = false; // Reset state on error
+                    console.error("Mic Error:", err);
+                    alert("Error Micrófono. Verifica permisos.");
+                    state.isRecording = false;
                 }
             }
 
-            stopRecording() {
-                if (state.mediaRecorder && state.isRecording) {
-                    state.mediaRecorder.stop();
-                    state.isRecording = false;
-                    updateMicUI(false);
+            stopRecording(onFinalize) {
+                if (!state.isRecording) return;
+                
+                state.isRecording = false;
+                clearInterval(state.chunkInterval);
+                this.playBeep(400); // Stop Beep
+
+                // Detener tracks del micrófono
+                if (state.stream) {
+                    state.stream.getTracks().forEach(track => track.stop());
                 }
+                updateMicUI(false);
+
+                // Compilar el audio final completo
+                const fullBlob = new Blob(state.fullAudioChunks, { type: 'audio/webm' });
+                onFinalize(fullBlob, state.streamId);
             }
 
             async playStreamChunk(base64data) {
                 this.resumeContext();
                 try {
+                    // Decodificar Base64
                     const binaryString = window.atob(base64data);
                     const len = binaryString.length;
                     const bytes = new Uint8Array(len);
                     for (let i = 0; i < len; i++) { bytes[i] = binaryString.charCodeAt(i); }
                     
+                    // IMPORTANTE: decodeAudioData funciona mejor con archivos completos.
+                    // Al reiniciar el MediaRecorder, cada chunk es un archivo mini válido.
                     const audioBuffer = await this.ctx.decodeAudioData(bytes.buffer);
+                    
                     const source = this.ctx.createBufferSource();
                     source.buffer = audioBuffer;
-                    
-                    // Connect to MASTER GAIN (Volume) instead of direct destination
                     source.connect(this.masterGain);
 
                     const now = this.ctx.currentTime;
-                    // Jitter buffer logic: If late, play immediately. If early, schedule.
+                    // Lógica de cola (Jitter Buffer simple)
+                    // Si el siguiente tiempo está en el pasado, resetear a 'ahora'
                     const startAt = Math.max(now, state.nextPlayTime);
                     source.start(startAt);
+                    
+                    // Actualizar puntero de tiempo
                     state.nextPlayTime = startAt + audioBuffer.duration;
+
                 } catch (e) {
-                    console.error("Error decoding chunk", e);
+                    console.error("Error decoding audio (posible chunk incompleto):", e);
                 }
             }
         }
         const audioEngine = new AudioEngine();
 
         // --------------------------------------------------------------------------
-        // 3. FIREBASE LOGIC
+        // FIREBASE
         // --------------------------------------------------------------------------
         async function initFirebase() {
-            if (!state.config.firebase) {
-                showSetup(true);
-                return;
-            }
+            if (!state.config.firebase) { showSetup(true); return; }
             const { initializeApp, getDatabase, getStorage } = window.FirebaseMods;
             try {
                 let app;
                 try { app = initializeApp(state.config.firebase); } catch(e) {}
-                
                 db = getDatabase(app);
                 storage = getStorage(app);
-                
                 els.statusText.innerText = "En línea";
                 els.statusText.classList.remove('text-red-400');
                 startListeners();
             } catch (e) {
                 console.error("Firebase init failed", e);
                 els.statusText.innerText = "Error Conexión";
-                els.statusText.classList.add('text-red-400');
                 showSetup(true);
             }
         }
@@ -385,14 +410,15 @@
             const { ref, onChildAdded, query, limitToLast } = window.FirebaseMods;
 
             const chatRef = query(ref(db, 'messages'), limitToLast(50));
-            onChildAdded(chatRef, (snapshot) => {
-                renderMessage(snapshot.val(), snapshot.key);
-            });
+            onChildAdded(chatRef, (snapshot) => renderMessage(snapshot.val(), snapshot.key));
 
             const streamRef = ref(db, 'stream');
             onChildAdded(streamRef, (snapshot) => {
                 const streamSession = snapshot.val();
-                if (streamSession.userId !== state.user.id) {
+                // Solo escuchar si no soy yo y es reciente (menos de 30s)
+                const isRecent = (Date.now() - (streamSession.timestamp || 0)) < 30000;
+                
+                if (streamSession.userId !== state.user.id && isRecent) {
                     const chunksRef = ref(db, `stream/${snapshot.key}/chunks`);
                     onChildAdded(chunksRef, (chunkSnap) => {
                         audioEngine.playStreamChunk(chunkSnap.val());
@@ -402,13 +428,14 @@
             });
         }
 
-        // ... (Send logic remains same) ...
         async function sendLiveChunk(streamId, base64) {
             const { ref, push, set } = window.FirebaseMods;
             const chunkRef = push(ref(db, `stream/${streamId}/chunks`));
             await set(chunkRef, base64);
+            // Metadata redundante para asegurar acceso rápido
             await set(ref(db, `stream/${streamId}/userId`), state.user.id);
             await set(ref(db, `stream/${streamId}/userName`), state.user.name);
+            await set(ref(db, `stream/${streamId}/timestamp`), Date.now());
         }
 
         async function finalizeAudio(blob, streamId) {
@@ -423,12 +450,9 @@
                 const audioUrl = await getDownloadURL(storageRef);
 
                 let transcript = "";
-                if (state.config.openai) {
-                    transcript = await transcribeAudio(blob);
-                }
+                if (state.config.openai) transcript = await transcribeAudio(blob);
 
-                const msgRef = push(ref(db, 'messages'));
-                await set(msgRef, {
+                await set(push(ref(db, 'messages')), {
                     type: 'audio',
                     userId: state.user.id,
                     userName: state.user.name,
@@ -457,18 +481,14 @@
         }
 
         // --------------------------------------------------------------------------
-        // 4. UI
+        // UI
         // --------------------------------------------------------------------------
         function showSetup(forceManual = false) {
             els.setupModal.classList.remove('hidden');
             const savedName = localStorage.getItem('vs_name');
             if (savedName) els.setupName.value = savedName;
-
-            if (!forceManual && state.config.firebase) {
-                els.manualConfigSection.classList.add('hidden');
-            } else {
-                els.manualConfigSection.classList.remove('hidden');
-            }
+            if (!forceManual && state.config.firebase) els.manualConfigSection.classList.add('hidden');
+            else els.manualConfigSection.classList.remove('hidden');
         }
 
         function renderMessage(msg, key) {
@@ -512,54 +532,30 @@
         }
 
         function showReceivingIndicator(name) {
-            // New logic: Show a nice banner
             els.receivingText.innerText = `${name} está hablando...`;
             els.receivingBanner.classList.remove('hidden');
-            
-            // Text status update (legacy)
-            els.statusText.innerText = `Recibiendo: ${name}`;
-            els.statusText.classList.add('text-emerald-400');
-
             clearTimeout(window.talkTimeout);
             window.talkTimeout = setTimeout(() => {
                 els.receivingBanner.classList.add('hidden');
-                els.statusText.innerText = "En línea";
-                els.statusText.classList.remove('text-emerald-400');
             }, 2000);
         }
 
-        // --------------------------------------------------------------------------
-        // 5. BOOTSTRAP & LISTENERS
-        // --------------------------------------------------------------------------
-        
-        // Volume Listener
-        els.volumeSliderModal.addEventListener('input', (e) => {
-            audioEngine.setVolume(parseFloat(e.target.value));
-        });
+        // LISTENERS
+        els.volumeSliderModal.addEventListener('input', (e) => audioEngine.setVolume(parseFloat(e.target.value)));
+        document.body.addEventListener('click', () => audioEngine.resumeContext(), { once: true });
 
-        // Global Click to unlock Audio Context (Browser policy)
-        document.body.addEventListener('click', () => {
-            audioEngine.resumeContext();
-        }, { once: true });
-
-        // Check for saved local config
         const localData = JSON.parse(localStorage.getItem('vs_config') || '{}');
         if (!state.config.firebase && localData.config?.firebase) {
             state.config.firebase = localData.config.firebase;
             state.config.openai = localData.config.openai;
         }
-
-        if (localData.user) {
-            state.user = localData.user;
-        } else {
-            state.user.id = crypto.randomUUID();
-        }
+        if (localData.user) state.user = localData.user;
+        else state.user.id = crypto.randomUUID();
 
         els.saveSetupBtn.addEventListener('click', () => {
             const name = els.setupName.value || 'Anon';
             state.user.name = name;
             localStorage.setItem('vs_name', name);
-
             if (!state.config.firebase) {
                 try {
                     const fbConfig = JSON.parse(els.setupFirebase.value);
@@ -567,29 +563,21 @@
                     state.config.firebase = fbConfig;
                     state.config.openai = openAI;
                     localStorage.setItem('vs_config', JSON.stringify({ user: state.user, config: state.config }));
-                } catch(e) {
-                    alert("JSON Inválido");
-                    return;
-                }
+                } catch(e) { alert("JSON Inválido"); return; }
             } else {
                 localStorage.setItem('vs_config', JSON.stringify({ user: state.user, config: null }));
             }
-
             els.setupModal.classList.add('hidden');
             els.userAvatar.innerText = name.substring(0,2).toUpperCase();
             initFirebase();
         });
 
         els.settingsBtn.addEventListener('click', () => showSetup(false));
-
         if (state.config.firebase && state.user.name !== 'Anon') {
             els.userAvatar.innerText = state.user.name.substring(0,2).toUpperCase();
             initFirebase();
-        } else {
-            showSetup(false);
-        }
+        } else { showSetup(false); }
 
-        // Chat & Mic Events (FIXED INTERACTIONS)
         els.messageInput.addEventListener('input', (e) => els.sendBtn.classList.toggle('hidden', e.target.value.trim() === ''));
         async function sendText() {
             const txt = els.messageInput.value.trim();
@@ -613,45 +601,29 @@
             await set(push(ref(db, 'messages')), { type: 'image', userId: state.user.id, userName: state.user.name, content: url, timestamp: serverTimestamp() });
         });
 
-        // Robust Mic Interaction Logic
         const startAction = (e) => { 
             e.preventDefault(); 
-            // Guard: If already recording, don't start again
-            if (state.isRecording) return;
-            
             audioEngine.startRecording(
                 (sid, ch) => sendLiveChunk(sid, ch), 
                 (blob, sid) => finalizeAudio(blob, sid)
             ); 
         };
-        
         const stopAction = (e) => { 
-            // Note: We don't preventDefault here always because it might block scrolling if attached to window, 
-            // but for the button specific logic it's fine.
             if (state.isRecording) {
-                audioEngine.stopRecording(); 
+                // Pasamos la función finalize al detener
+                audioEngine.stopRecording((blob, sid) => finalizeAudio(blob, sid)); 
             }
         };
 
-        // Attach listeners
         els.micBtn.addEventListener('mousedown', startAction); 
         els.micBtn.addEventListener('touchstart', startAction); 
-        
-        // Prevent context menu on long press
-        els.micBtn.addEventListener('contextmenu', (e) => {
-            e.preventDefault();
-            e.stopPropagation();
-            return false;
-        });
-
-        // Global listeners for stopping to catch "drag off" or "release outside"
+        els.micBtn.addEventListener('contextmenu', (e) => { e.preventDefault(); e.stopPropagation(); return false; });
         window.addEventListener('mouseup', stopAction); 
         window.addEventListener('touchend', stopAction);
-        window.addEventListener('touchcancel', stopAction); // Handle interruptions (calls, alerts)
+        window.addEventListener('touchcancel', stopAction);
 
         function escapeHtml(text) { return text.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;").replace(/'/g, "&#039;"); }
         lucide.createIcons();
-
     </script>
 </body>
 </html>
