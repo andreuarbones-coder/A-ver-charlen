@@ -1,15 +1,21 @@
 import { initializeApp } from "https://www.gstatic.com/firebasejs/10.7.1/firebase-app.js";
 import { getDatabase, ref, push, set, onChildAdded, remove, serverTimestamp, query, limitToLast } from "https://www.gstatic.com/firebasejs/10.7.1/firebase-database.js";
 import { getStorage, ref as sRef, uploadBytes, getDownloadURL } from "https://www.gstatic.com/firebasejs/10.7.1/firebase-storage.js";
+import { getAuth, signInAnonymously } from "https://www.gstatic.com/firebasejs/10.7.1/firebase-auth.js";
 import { CONFIG, STATE } from './config.js';
 
-let db, storage;
+let db, storage, auth;
 
-export function initFirebase(onMessage, onStreamStart, onStreamChunk) {
+export async function initFirebase(onMessage, onStreamStart, onStreamChunk) {
     try {
         const app = initializeApp(CONFIG.firebase);
         db = getDatabase(app);
         storage = getStorage(app);
+        auth = getAuth(app);
+
+        // 1. Autenticación Anónima (Vital para evitar bloqueos de reglas de seguridad)
+        await signInAnonymously(auth);
+        console.log("🔥 Firebase: Autenticado como anónimo");
         
         // Listeners
         startChatListener(onMessage);
@@ -17,12 +23,13 @@ export function initFirebase(onMessage, onStreamStart, onStreamChunk) {
         
         return true;
     } catch (e) {
-        console.error("Firebase Error:", e);
+        console.error("Firebase Error (Init):", e);
         return false;
     }
 }
 
 function startChatListener(callback) {
+    // Solo traer los últimos 50 mensajes
     const chatRef = query(ref(db, 'messages'), limitToLast(50));
     onChildAdded(chatRef, (snapshot) => {
         callback(snapshot.val());
@@ -37,18 +44,27 @@ function startStreamListener(onStart, onChunk) {
         const session = snapshot.val();
         const streamKey = snapshot.key;
 
-        // Validar si es reciente (menos de 30seg)
-        const isRecent = (Date.now() - (session.timestamp || 0)) < 30000;
+        // Validar si es reciente (menos de 60seg de holgura)
+        const isRecent = (Date.now() - (session.timestamp || 0)) < 60000;
 
+        // IMPORTANTE: Bloqueamos eco, PERO asegúrate de probar con usuarios distintos
         if (session.userId !== STATE.user.id && isRecent) {
+            console.log(`🎤 Detectada transmisión de: ${session.userName}`);
+            
             // Notificar UI que alguien transmite
             onStart(session.userName);
 
             // Escuchar chunks de ESTA sesión específica
-            const chunksRef = ref(db, `stream/${streamKey}/chunks`);
+            // OPTIMIZACIÓN: limitToLast(3) para evitar descargar todo el historial del audio
+            // Solo queremos lo que está pasando AHORA (live)
+            const chunksRef = query(ref(db, `stream/${streamKey}/chunks`), limitToLast(3));
+            
             onChildAdded(chunksRef, (chunkSnap) => {
                 onChunk(chunkSnap.val());
             });
+        } else {
+            if(!isRecent) console.log("Stream ignorado por antiguo");
+            if(session.userId === STATE.user.id) console.log("Stream ignorado (soy yo mismo)");
         }
     });
 }
@@ -57,28 +73,33 @@ function startStreamListener(onStart, onChunk) {
 
 export async function sendText(text) {
     if (!text) return;
-    await set(push(ref(db, 'messages')), {
-        type: 'text',
-        userId: STATE.user.id,
-        userName: STATE.user.name,
-        content: text,
-        timestamp: serverTimestamp()
-    });
+    try {
+        await set(push(ref(db, 'messages')), {
+            type: 'text',
+            userId: STATE.user.id,
+            userName: STATE.user.name,
+            content: text,
+            timestamp: serverTimestamp()
+        });
+    } catch (e) {
+        console.error("Error enviando texto:", e);
+    }
 }
 
 export async function sendLiveChunkData(streamId, base64) {
-    // 1. Crear sesión si es el primer chunk
-    const sessionRef = ref(db, `stream/${streamId}`);
-    // Usamos update para no sobrescribir si ya existe, pero set en chunks
-    // Nota: Para optimizar, asumimos que los metadatos se mandan una vez
-    
-    // 2. Enviar chunk
-    await set(push(ref(db, `stream/${streamId}/chunks`)), base64);
-    
-    // 3. Mantener metadatos vivos
-    await set(ref(db, `stream/${streamId}/userId`), STATE.user.id);
-    await set(ref(db, `stream/${streamId}/userName`), STATE.user.name);
-    await set(ref(db, `stream/${streamId}/timestamp`), Date.now());
+    try {
+        // Actualizamos timestamp para mantener la sesión "viva"
+        // Promise.all para que sea más rápido y paralelo
+        await Promise.all([
+            set(push(ref(db, `stream/${streamId}/chunks`)), base64),
+            set(ref(db, `stream/${streamId}/timestamp`), Date.now()),
+            // Setear datos de usuario solo si es necesario (optimización opcional)
+            set(ref(db, `stream/${streamId}/userId`), STATE.user.id),
+            set(ref(db, `stream/${streamId}/userName`), STATE.user.name)
+        ]);
+    } catch (e) {
+        console.error("Error enviando chunk:", e);
+    }
 }
 
 export async function uploadFinalAudio(blob, streamId, transcript = "") {
@@ -86,7 +107,7 @@ export async function uploadFinalAudio(blob, streamId, transcript = "") {
     const storageRef = sRef(storage, filename);
     
     try {
-        await uploadBytes(storageRef, blob);
+        const snap = await uploadBytes(storageRef, blob);
         const url = await getDownloadURL(storageRef);
 
         await set(push(ref(db, 'messages')), {
@@ -98,23 +119,29 @@ export async function uploadFinalAudio(blob, streamId, transcript = "") {
             timestamp: serverTimestamp()
         });
 
-        // Limpiar stream de la DB después de un rato
-        setTimeout(() => remove(ref(db, `stream/${streamId}`)), 5000);
+        // Limpiar stream de la DB después de 5 segundos
+        setTimeout(() => {
+            remove(ref(db, `stream/${streamId}`)).catch(err => console.log("Error borrando stream viejo", err));
+        }, 5000);
     } catch (e) {
         console.error("Error subiendo audio final:", e);
     }
 }
 
 export async function uploadImage(file) {
-    const storageRef = sRef(storage, `images/${Date.now()}_${file.name}`);
-    await uploadBytes(storageRef, file);
-    const url = await getDownloadURL(storageRef);
-    
-    await set(push(ref(db, 'messages')), {
-        type: 'image',
-        userId: STATE.user.id,
-        userName: STATE.user.name,
-        content: url,
-        timestamp: serverTimestamp()
-    });
+    try {
+        const storageRef = sRef(storage, `images/${Date.now()}_${file.name}`);
+        await uploadBytes(storageRef, file);
+        const url = await getDownloadURL(storageRef);
+        
+        await set(push(ref(db, 'messages')), {
+            type: 'image',
+            userId: STATE.user.id,
+            userName: STATE.user.name,
+            content: url,
+            timestamp: serverTimestamp()
+        });
+    } catch (e) {
+        console.error("Error subiendo imagen:", e);
+    }
 }
