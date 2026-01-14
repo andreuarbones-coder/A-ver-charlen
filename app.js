@@ -99,11 +99,12 @@ document.body.addEventListener('click', () => audio.resumeContext(), { once: tru
 
 // --- FUNCIONES CORE ---
 
-function startApp() {
-    els.statusText.innerText = "Conectando...";
+async function startApp() {
+    els.statusText.innerText = "Autenticando...";
     els.statusText.classList.add('text-yellow-400');
     
-    const connected = FB.initFirebase(
+    // Ahora esperamos a que se conecte y autentique
+    const connected = await FB.initFirebase(
         renderMessage,          // onMessage
         onStreamStart,          // onStreamStart
         (chunk) => audio.playStreamChunk(chunk) // onStreamChunk
@@ -132,7 +133,7 @@ function onStreamStart(userName) {
     clearTimeout(window.talkTimeout);
     window.talkTimeout = setTimeout(() => {
         els.receivingBanner.classList.add('hidden');
-    }, 2000);
+    }, 4000); // Aumentado a 4 segundos para que se vea mejor
 }
 
 function updateMicUI(isRecording) {
