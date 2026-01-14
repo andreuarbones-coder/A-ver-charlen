@@ -1,0 +1,67 @@
+/* Estilos base */
+::-webkit-scrollbar { width: 6px; }
+::-webkit-scrollbar-track { background: #1f2937; }
+::-webkit-scrollbar-thumb { background: #4b5563; border-radius: 3px; }
+::-webkit-scrollbar-thumb:hover { background: #6b7280; }
+
+.glass-panel {
+    background: rgba(31, 41, 55, 0.7);
+    backdrop-filter: blur(10px);
+    border: 1px solid rgba(255, 255, 255, 0.1);
+}
+
+.no-select {
+    user-select: none;
+    -webkit-user-select: none;
+    -webkit-touch-callout: none;
+    -webkit-tap-highlight-color: transparent;
+}
+
+/* Animación del Micrófono (Grabando) */
+@keyframes pulse-ring {
+    0% { transform: scale(0.8); box-shadow: 0 0 0 0 rgba(239, 68, 68, 0.7); }
+    70% { transform: scale(1.1); box-shadow: 0 0 0 15px rgba(239, 68, 68, 0); }
+    100% { transform: scale(0.8); box-shadow: 0 0 0 0 rgba(239, 68, 68, 0); }
+}
+.recording-pulse {
+    animation: pulse-ring 1.5s cubic-bezier(0.215, 0.61, 0.355, 1) infinite;
+}
+
+/* Animación de Ondas (Recibiendo) */
+@keyframes sound-wave {
+    0% { height: 4px; }
+    50% { height: 16px; }
+    100% { height: 4px; }
+}
+.sound-bar {
+    width: 4px;
+    background: #34d399;
+    border-radius: 2px;
+    animation: sound-wave 0.5s infinite ease-in-out;
+}
+.sound-bar:nth-child(2) { animation-delay: 0.1s; }
+.sound-bar:nth-child(3) { animation-delay: 0.2s; }
+.sound-bar:nth-child(4) { animation-delay: 0.3s; }
+
+/* Slider Personalizado */
+input[type=range] {
+    -webkit-appearance: none;
+    width: 100%;
+    background: transparent;
+}
+input[type=range]::-webkit-slider-thumb {
+    -webkit-appearance: none;
+    height: 16px;
+    width: 16px;
+    border-radius: 50%;
+    background: #34d399;
+    cursor: pointer;
+    margin-top: -6px; 
+}
+input[type=range]::-webkit-slider-runnable-track {
+    width: 100%;
+    height: 4px;
+    cursor: pointer;
+    background: #4b5563;
+    border-radius: 2px;
+}
