@@ -38,6 +38,21 @@
             animation: pulse-ring 1.5s cubic-bezier(0.215, 0.61, 0.355, 1) infinite;
         }
 
+        @keyframes sound-wave {
+            0% { height: 4px; }
+            50% { height: 16px; }
+            100% { height: 4px; }
+        }
+        .sound-bar {
+            width: 4px;
+            background: #34d399;
+            border-radius: 2px;
+            animation: sound-wave 0.5s infinite ease-in-out;
+        }
+        .sound-bar:nth-child(2) { animation-delay: 0.1s; }
+        .sound-bar:nth-child(3) { animation-delay: 0.2s; }
+        .sound-bar:nth-child(4) { animation-delay: 0.3s; }
+
         .glass-panel {
             background: rgba(31, 41, 55, 0.7);
             backdrop-filter: blur(10px);
@@ -49,19 +64,52 @@
             user-select: none;
             -webkit-user-select: none;
             -webkit-touch-callout: none;
+            -webkit-tap-highlight-color: transparent;
+        }
+
+        input[type=range] {
+            -webkit-appearance: none;
+            width: 100%;
+            background: transparent;
+        }
+        
+        input[type=range]::-webkit-slider-thumb {
+            -webkit-appearance: none;
+            height: 16px;
+            width: 16px;
+            border-radius: 50%;
+            background: #34d399;
+            cursor: pointer;
+            margin-top: -6px; 
+        }
+
+        input[type=range]::-webkit-slider-runnable-track {
+            width: 100%;
+            height: 4px;
+            cursor: pointer;
+            background: #4b5563;
+            border-radius: 2px;
         }
     </style>
 </head>
 <body class="bg-gray-900 text-white h-screen overflow-hidden flex flex-col font-sans">
 
-    <!-- SETUP MODAL (Solo se muestra si no hay config hardcodeada) -->
+    <!-- SETUP MODAL (Settings) -->
     <div id="setupModal" class="fixed inset-0 z-50 bg-black/90 flex items-center justify-center p-4 hidden">
         <div class="bg-gray-800 p-6 rounded-2xl max-w-md w-full border border-gray-700 shadow-2xl">
-            <h2 class="text-2xl font-bold mb-4 text-emerald-400">Configuración Inicial</h2>
-            <p class="text-gray-400 text-sm mb-4">Ingresa tu nombre para comenzar.</p>
+            <h2 class="text-2xl font-bold mb-4 text-emerald-400 flex items-center gap-2">
+                <i data-lucide="settings"></i> Configuración
+            </h2>
             
             <label class="block text-xs font-bold text-gray-500 uppercase mb-1">Tu Nombre</label>
             <input type="text" id="setupName" placeholder="Ej: CyberPunk" class="w-full bg-gray-900 border border-gray-700 rounded p-2 mb-4 text-white focus:outline-none focus:border-emerald-500">
+
+            <!-- Volume Control in Settings -->
+            <label class="block text-xs font-bold text-gray-500 uppercase mb-2">Volumen de Recepción</label>
+            <div class="flex items-center gap-3 mb-6 bg-gray-900 p-3 rounded border border-gray-700">
+                <i data-lucide="volume-2" class="text-gray-400 w-5 h-5"></i>
+                <input type="range" id="volumeSliderModal" min="0" max="1" step="0.1" value="1" class="w-full">
+            </div>
 
             <!-- Sección de config manual (oculta si ya existe config en código) -->
             <div id="manualConfigSection">
@@ -73,13 +121,13 @@
             </div>
 
             <button id="saveSetupBtn" class="w-full bg-emerald-600 hover:bg-emerald-500 text-white font-bold py-3 rounded-xl transition-all">
-                Entrar al Sistema
+                Guardar y Entrar
             </button>
         </div>
     </div>
 
     <!-- HEADER -->
-    <header class="glass-panel p-4 flex justify-between items-center z-10 shadow-lg">
+    <header class="glass-panel p-4 flex justify-between items-center z-10 shadow-lg relative">
         <div class="flex items-center gap-3">
             <div class="w-10 h-10 rounded-full bg-gradient-to-tr from-emerald-500 to-cyan-500 flex items-center justify-center font-bold text-lg shadow-lg" id="userAvatar">
                 ?
@@ -97,6 +145,17 @@
         </button>
     </header>
 
+    <!-- RECEIVING INDICATOR -->
+    <div id="receivingBanner" class="hidden w-full bg-gray-800/90 border-b border-emerald-500/50 p-2 flex items-center justify-center gap-3 backdrop-blur-sm z-0 animate-in slide-in-from-top duration-300 absolute top-[72px] left-0">
+        <div class="flex items-end gap-1 h-4">
+            <div class="sound-bar"></div>
+            <div class="sound-bar"></div>
+            <div class="sound-bar"></div>
+            <div class="sound-bar"></div>
+        </div>
+        <span class="text-sm font-bold text-emerald-400" id="receivingText">Recibiendo audio...</span>
+    </div>
+
     <!-- CHAT AREA -->
     <main id="chatArea" class="flex-1 overflow-y-auto p-4 space-y-4 scroll-smooth pb-32">
         <div class="text-center text-gray-500 text-sm my-8">
@@ -107,8 +166,8 @@
 
     <!-- INPUT AREA -->
     <footer class="fixed bottom-0 w-full glass-panel p-4 pb-6 z-20">
-        <!-- Audio Status Indicator -->
-        <div id="liveIndicator" class="hidden absolute -top-10 left-1/2 transform -translate-x-1/2 bg-red-500/90 text-white px-4 py-1 rounded-full text-xs font-bold flex items-center gap-2 shadow-lg backdrop-blur">
+        <!-- Audio Recording Indicator -->
+        <div id="liveIndicator" class="hidden absolute -top-10 left-1/2 transform -translate-x-1/2 bg-red-500/90 text-white px-4 py-1 rounded-full text-xs font-bold flex items-center gap-2 shadow-lg backdrop-blur pointer-events-none">
             <span class="animate-ping absolute inline-flex h-2 w-2 rounded-full bg-white opacity-75"></span>
             <span class="relative inline-flex rounded-full h-2 w-2 bg-white"></span>
             TRANSMITIENDO EN VIVO...
@@ -127,7 +186,8 @@
                 </button>
             </div>
 
-            <button id="micBtn" class="no-select w-12 h-12 rounded-full bg-gradient-to-r from-emerald-600 to-teal-600 flex items-center justify-center text-white shadow-lg active:scale-95 transition-transform touch-none">
+            <!-- Botón de Micrófono con eventos mejorados -->
+            <button id="micBtn" class="no-select w-12 h-12 rounded-full bg-gradient-to-r from-emerald-600 to-teal-600 flex items-center justify-center text-white shadow-lg active:scale-95 transition-transform touch-none select-none">
                 <i data-lucide="mic"></i>
             </button>
         </div>
@@ -141,7 +201,6 @@
         const FIREBASE_CONFIG = {
             apiKey: "AIzaSyASWpIx5lvoYHHcyQzv3A2sJfU-TtNwIO8",
             authDomain: "a-ver-charlen.firebaseapp.com",
-            // Agregado manualmente porque faltaba en tu snippet, es la URL standard
             databaseURL: "https://a-ver-charlen-default-rtdb.firebaseio.com", 
             projectId: "a-ver-charlen",
             storageBucket: "a-ver-charlen.firebasestorage.app",
@@ -149,7 +208,6 @@
             appId: "1:414933228498:web:fae4c31dfa855addd7c60b"
         };
         
-        // Opcional: Tu API Key de OpenAI para transcripciones (Si no la usas, déjala null)
         const OPENAI_KEY = null; 
         
         // --------------------------------------------------------------------------
@@ -158,6 +216,7 @@
         const state = {
             user: { id: null, name: 'Anon' },
             config: { firebase: FIREBASE_CONFIG, openai: OPENAI_KEY },
+            volume: 1.0,
             isRecording: false,
             audioContext: null,
             nextPlayTime: 0,
@@ -169,6 +228,7 @@
         const els = {
             setupModal: document.getElementById('setupModal'),
             setupName: document.getElementById('setupName'),
+            volumeSliderModal: document.getElementById('volumeSliderModal'),
             manualConfigSection: document.getElementById('manualConfigSection'),
             setupFirebase: document.getElementById('setupFirebase'),
             setupOpenAI: document.getElementById('setupOpenAI'),
@@ -178,6 +238,8 @@
             sendBtn: document.getElementById('sendBtn'),
             micBtn: document.getElementById('micBtn'),
             liveIndicator: document.getElementById('liveIndicator'),
+            receivingBanner: document.getElementById('receivingBanner'),
+            receivingText: document.getElementById('receivingText'),
             imageInput: document.getElementById('imageInput'),
             settingsBtn: document.getElementById('settingsBtn'),
             userAvatar: document.getElementById('userAvatar'),
@@ -187,15 +249,35 @@
         let db, storage;
 
         // --------------------------------------------------------------------------
-        // 2. AUDIO ENGINE
+        // 2. AUDIO ENGINE (Mejorado con Control de Volumen)
         // --------------------------------------------------------------------------
         class AudioEngine {
             constructor() {
                 this.AudioContext = window.AudioContext || window.webkitAudioContext;
                 this.ctx = new this.AudioContext();
+                
+                // Master Volume Node
+                this.masterGain = this.ctx.createGain();
+                this.masterGain.gain.value = state.volume;
+                this.masterGain.connect(this.ctx.destination);
+            }
+
+            setVolume(value) {
+                state.volume = value;
+                // Transition smooth para evitar "pops"
+                this.masterGain.gain.setTargetAtTime(value, this.ctx.currentTime, 0.1);
+            }
+
+            resumeContext() {
+                if (this.ctx.state === 'suspended') {
+                    this.ctx.resume();
+                }
             }
 
             async startRecording(onChunk, onStop) {
+                if (state.isRecording) return; // Prevent double start
+
+                this.resumeContext();
                 try {
                     const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
                     state.streamId = `stream_${Date.now()}_${state.user.id}`;
@@ -225,13 +307,15 @@
                         stream.getTracks().forEach(track => track.stop());
                     };
 
+                    // Slices pequeños para latencia baja
                     state.mediaRecorder.start(500); 
                     state.isRecording = true;
                     updateMicUI(true);
 
                 } catch (err) {
                     console.error("Error micrófono:", err);
-                    alert("No se pudo acceder al micrófono.");
+                    alert("No se pudo acceder al micrófono. Verifica permisos y HTTPS.");
+                    state.isRecording = false; // Reset state on error
                 }
             }
 
@@ -244,7 +328,7 @@
             }
 
             async playStreamChunk(base64data) {
-                if (this.ctx.state === 'suspended') await this.ctx.resume();
+                this.resumeContext();
                 try {
                     const binaryString = window.atob(base64data);
                     const len = binaryString.length;
@@ -254,14 +338,17 @@
                     const audioBuffer = await this.ctx.decodeAudioData(bytes.buffer);
                     const source = this.ctx.createBufferSource();
                     source.buffer = audioBuffer;
-                    source.connect(this.ctx.destination);
+                    
+                    // Connect to MASTER GAIN (Volume) instead of direct destination
+                    source.connect(this.masterGain);
 
                     const now = this.ctx.currentTime;
+                    // Jitter buffer logic: If late, play immediately. If early, schedule.
                     const startAt = Math.max(now, state.nextPlayTime);
                     source.start(startAt);
                     state.nextPlayTime = startAt + audioBuffer.duration;
                 } catch (e) {
-                    console.error("Error audio chunk", e);
+                    console.error("Error decoding chunk", e);
                 }
             }
         }
@@ -277,13 +364,8 @@
             }
             const { initializeApp, getDatabase, getStorage } = window.FirebaseMods;
             try {
-                // Check if app already initialized
                 let app;
-                try {
-                   app = initializeApp(state.config.firebase);
-                } catch(e) {
-                    // Assume initialized if error is duplicate app or re-run
-                }
+                try { app = initializeApp(state.config.firebase); } catch(e) {}
                 
                 db = getDatabase(app);
                 storage = getStorage(app);
@@ -314,7 +396,7 @@
                     const chunksRef = ref(db, `stream/${snapshot.key}/chunks`);
                     onChildAdded(chunksRef, (chunkSnap) => {
                         audioEngine.playStreamChunk(chunkSnap.val());
-                        showTalkingNotification(streamSession.userName);
+                        showReceivingIndicator(streamSession.userName);
                     });
                 }
             });
@@ -325,7 +407,6 @@
             const { ref, push, set } = window.FirebaseMods;
             const chunkRef = push(ref(db, `stream/${streamId}/chunks`));
             await set(chunkRef, base64);
-            // Metadata for session if new
             await set(ref(db, `stream/${streamId}/userId`), state.user.id);
             await set(ref(db, `stream/${streamId}/userName`), state.user.name);
         }
@@ -380,11 +461,9 @@
         // --------------------------------------------------------------------------
         function showSetup(forceManual = false) {
             els.setupModal.classList.remove('hidden');
-            // Check if we have name saved
             const savedName = localStorage.getItem('vs_name');
             if (savedName) els.setupName.value = savedName;
 
-            // If config is hardcoded, hide the manual config section
             if (!forceManual && state.config.firebase) {
                 els.manualConfigSection.classList.add('hidden');
             } else {
@@ -403,7 +482,7 @@
             else if (msg.type === 'audio') content = `
                 <div class="flex items-center gap-2 min-w-[200px]">
                     <button onclick="this.nextElementSibling.play()" class="p-2 bg-gray-700 rounded-full hover:bg-gray-600"><i data-lucide="play" class="w-4 h-4"></i></button>
-                    <audio src="${msg.content}" class="hidden"></audio>
+                    <audio src="${msg.content}" class="hidden" onplay="audioEngine.resumeContext()"></audio>
                     <div class="flex-1">
                         <div class="h-1 bg-gray-700 rounded w-full overflow-hidden"><div class="h-full bg-cyan-500 w-1/2"></div></div>
                         ${msg.transcript ? `<p class="text-[10px] text-gray-400 mt-1 italic">"${msg.transcript}"</p>` : ''}
@@ -432,65 +511,68 @@
             }
         }
 
-        function showTalkingNotification(name) {
-            els.statusText.innerText = `${name} está hablando...`;
+        function showReceivingIndicator(name) {
+            // New logic: Show a nice banner
+            els.receivingText.innerText = `${name} está hablando...`;
+            els.receivingBanner.classList.remove('hidden');
+            
+            // Text status update (legacy)
+            els.statusText.innerText = `Recibiendo: ${name}`;
             els.statusText.classList.add('text-emerald-400');
+
             clearTimeout(window.talkTimeout);
             window.talkTimeout = setTimeout(() => {
+                els.receivingBanner.classList.add('hidden');
                 els.statusText.innerText = "En línea";
                 els.statusText.classList.remove('text-emerald-400');
             }, 2000);
         }
 
         // --------------------------------------------------------------------------
-        // 5. BOOTSTRAP
+        // 5. BOOTSTRAP & LISTENERS
         // --------------------------------------------------------------------------
         
-        // Check for saved local config override (legacy or dev mode)
+        // Volume Listener
+        els.volumeSliderModal.addEventListener('input', (e) => {
+            audioEngine.setVolume(parseFloat(e.target.value));
+        });
+
+        // Global Click to unlock Audio Context (Browser policy)
+        document.body.addEventListener('click', () => {
+            audioEngine.resumeContext();
+        }, { once: true });
+
+        // Check for saved local config
         const localData = JSON.parse(localStorage.getItem('vs_config') || '{}');
-        
-        // Priority: Hardcoded > LocalStorage > Null
         if (!state.config.firebase && localData.config?.firebase) {
             state.config.firebase = localData.config.firebase;
             state.config.openai = localData.config.openai;
         }
 
-        // User ID Persistence
         if (localData.user) {
             state.user = localData.user;
         } else {
             state.user.id = crypto.randomUUID();
         }
 
-        // Setup logic
         els.saveSetupBtn.addEventListener('click', () => {
             const name = els.setupName.value || 'Anon';
             state.user.name = name;
             localStorage.setItem('vs_name', name);
 
-            // If manual config was entered
             if (!state.config.firebase) {
                 try {
                     const fbConfig = JSON.parse(els.setupFirebase.value);
                     const openAI = els.setupOpenAI.value;
                     state.config.firebase = fbConfig;
                     state.config.openai = openAI;
-                    
-                    // Save to local storage so they don't type it again on THIS device
-                    localStorage.setItem('vs_config', JSON.stringify({
-                        user: state.user,
-                        config: state.config
-                    }));
+                    localStorage.setItem('vs_config', JSON.stringify({ user: state.user, config: state.config }));
                 } catch(e) {
                     alert("JSON Inválido");
                     return;
                 }
             } else {
-                // If using hardcoded, just update name in storage
-                localStorage.setItem('vs_config', JSON.stringify({
-                    user: state.user,
-                    config: null // Don't save hardcoded config to localstorage, keep it clean
-                }));
+                localStorage.setItem('vs_config', JSON.stringify({ user: state.user, config: null }));
             }
 
             els.setupModal.classList.add('hidden');
@@ -500,7 +582,6 @@
 
         els.settingsBtn.addEventListener('click', () => showSetup(false));
 
-        // Auto-start if we have everything
         if (state.config.firebase && state.user.name !== 'Anon') {
             els.userAvatar.innerText = state.user.name.substring(0,2).toUpperCase();
             initFirebase();
@@ -508,7 +589,7 @@
             showSetup(false);
         }
 
-        // ... (Event Listeners for Chat/Mic remain same) ...
+        // Chat & Mic Events (FIXED INTERACTIONS)
         els.messageInput.addEventListener('input', (e) => els.sendBtn.classList.toggle('hidden', e.target.value.trim() === ''));
         async function sendText() {
             const txt = els.messageInput.value.trim();
@@ -532,10 +613,41 @@
             await set(push(ref(db, 'messages')), { type: 'image', userId: state.user.id, userName: state.user.name, content: url, timestamp: serverTimestamp() });
         });
 
-        const startAction = (e) => { e.preventDefault(); audioEngine.startRecording((sid, ch) => sendLiveChunk(sid, ch), (blob, sid) => finalizeAudio(blob, sid)); };
-        const stopAction = (e) => { e.preventDefault(); audioEngine.stopRecording(); };
-        els.micBtn.addEventListener('mousedown', startAction); els.micBtn.addEventListener('mouseup', stopAction); els.micBtn.addEventListener('mouseleave', stopAction);
-        els.micBtn.addEventListener('touchstart', startAction); els.micBtn.addEventListener('touchend', stopAction);
+        // Robust Mic Interaction Logic
+        const startAction = (e) => { 
+            e.preventDefault(); 
+            // Guard: If already recording, don't start again
+            if (state.isRecording) return;
+            
+            audioEngine.startRecording(
+                (sid, ch) => sendLiveChunk(sid, ch), 
+                (blob, sid) => finalizeAudio(blob, sid)
+            ); 
+        };
+        
+        const stopAction = (e) => { 
+            // Note: We don't preventDefault here always because it might block scrolling if attached to window, 
+            // but for the button specific logic it's fine.
+            if (state.isRecording) {
+                audioEngine.stopRecording(); 
+            }
+        };
+
+        // Attach listeners
+        els.micBtn.addEventListener('mousedown', startAction); 
+        els.micBtn.addEventListener('touchstart', startAction); 
+        
+        // Prevent context menu on long press
+        els.micBtn.addEventListener('contextmenu', (e) => {
+            e.preventDefault();
+            e.stopPropagation();
+            return false;
+        });
+
+        // Global listeners for stopping to catch "drag off" or "release outside"
+        window.addEventListener('mouseup', stopAction); 
+        window.addEventListener('touchend', stopAction);
+        window.addEventListener('touchcancel', stopAction); // Handle interruptions (calls, alerts)
 
         function escapeHtml(text) { return text.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;").replace(/'/g, "&#039;"); }
         lucide.createIcons();
